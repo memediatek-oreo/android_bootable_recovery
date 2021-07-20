@@ -56,6 +56,7 @@
 #include "roots.h"
 #include "ui.h"
 #include "verifier.h"
+#include "mt_install.h"
 
 using namespace std::chrono_literals;
 
@@ -588,10 +589,17 @@ static int really_install_package(const std::string& path, bool* wipe_cache, boo
   if (err != 0) {
     LOG(ERROR) << "Can't open " << path << " : " << ErrorCodeString(err);
     log_buffer->push_back(android::base::StringPrintf("error: %d", kZipOpenFailure));
-
     CloseArchive(zip);
     return INSTALL_CORRUPT;
   }
+  // Check partition size between source and target
+#ifndef AB_OTA_UPDATER
+  int ret=INSTALL_SUCCESS;
+  if (mt_really_install_package_check_part_size(ret, path.c_str(), needs_mount, zip)) {
+    CloseArchive(zip);
+    return ret;
+  }
+#endif
 
   // Additionally verify the compatibility of the package.
   if (!verify_package_compatibility(zip)) {
@@ -640,7 +648,7 @@ int install_package(const std::string& path, bool* wipe_cache, const std::string
   std::chrono::duration<double> duration = std::chrono::system_clock::now() - start;
   int time_total = static_cast<int>(duration.count());
 
-  bool has_cache = volume_for_path("/cache") != nullptr;
+  bool has_cache = volume_for_mount_point("/cache") != nullptr;
   // Skip logging the uncrypt_status on devices without /cache.
   if (has_cache) {
     static constexpr const char* UNCRYPT_STATUS = "/cache/recovery/uncrypt_status";

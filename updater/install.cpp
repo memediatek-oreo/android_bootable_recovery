@@ -63,6 +63,7 @@
 #include "otautil/DirUtil.h"
 #include "print_sha1.h"
 #include "tune2fs.h"
+#include "updater/mt_install.h"
 #include "updater/updater.h"
 
 // Send over the buffer to recovery though the command pipe.
@@ -1021,7 +1022,7 @@ Value* Tune2FsFn(const char* name, State* state, const std::vector<std::unique_p
   return StringValue("t");
 }
 
-void RegisterInstallFunctions() {
+void RegisterInstallFunctionsWithoutMtCall() {
   RegisterFunction("mount", MountFn);
   RegisterFunction("is_mounted", IsMountedFn);
   RegisterFunction("unmount", UnmountFn);
@@ -1055,4 +1056,9 @@ void RegisterInstallFunctions() {
 
   RegisterFunction("enable_reboot", EnableRebootFn);
   RegisterFunction("tune2fs", Tune2FsFn);
+}
+
+void RegisterInstallFunctions() {
+  RegisterInstallFunctionsWithoutMtCall();
+  mt_RegisterInstallFunctions();
 }

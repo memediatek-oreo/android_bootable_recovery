@@ -62,6 +62,11 @@ RecoveryUI::RecoveryUI()
       key_long_press(false),
       key_down_count(0),
       enable_reboot(true),
+/* Vanzo:xiehui on: Thu, 04 Jan 2018 21:24:34 +0800
+ * modify issue id: ALPS03710103
+ */
+      recovery_show_menu_flag(0),
+// End of Vanzo:xiehui
       consecutive_power_keys(0),
       last_key(-1),
       has_power_key(false),
@@ -523,6 +528,14 @@ void RecoveryUI::FlushKeys() {
 }
 
 RecoveryUI::KeyAction RecoveryUI::CheckKey(int key, bool is_long_press) {
+/* Vanzo:xiehui on: Thu, 04 Jan 2018 21:20:41 +0800
+ * modify issue id: ALPS03710103
+ */
+     if (key == KEY_POWER && recovery_show_menu_flag==false) {
+       recovery_show_menu_flag=true;
+       return TOGGLE;
+     }
+// End of Vanzo:xiehui
   pthread_mutex_lock(&key_queue_mutex);
   key_long_press = false;
   pthread_mutex_unlock(&key_queue_mutex);

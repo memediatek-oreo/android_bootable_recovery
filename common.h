@@ -45,4 +45,5 @@ bool is_ro_debuggable();
 
 bool reboot(const std::string& command);
 
+#include "mt_common.h"
 #endif  // RECOVERY_COMMON_H

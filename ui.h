@@ -153,6 +153,11 @@ class RecoveryUI {
   int key_down_count;             // under key_queue_mutex
   bool enable_reboot;             // under key_queue_mutex
   int rel_sum;
+/* Vanzo:xiehui on: Thu, 04 Jan 2018 21:26:38 +0800
+ * modify issue id: ALPS0371010
+ */
+  bool recovery_show_menu_flag;
+// End of Vanzo:xiehui
 
   int consecutive_power_keys;
   int last_key;

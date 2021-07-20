@@ -73,7 +73,16 @@
 #include "screen_ui.h"
 #include "stub_ui.h"
 #include "ui.h"
+#include "mt_recovery.h"
+#include "mt_partition.h"
 
+//adupsfota start
+#ifdef ADUPS_FOTA_SUPPORT
+void finish_adupsfota(const char* path, const char* source, int status);
+void find_update_package_new(const char* path);
+static int perform_fota = 0;
+#endif
+//adupsfota end
 static const struct option OPTIONS[] = {
   { "update_package", required_argument, NULL, 'u' },
   { "retry_count", required_argument, NULL, 'n' },
@@ -107,6 +116,7 @@ static const char *LOCALE_FILE = "/cache/recovery/last_locale";
 static const char *CONVERT_FBE_DIR = "/tmp/convert_fbe";
 static const char *CONVERT_FBE_FILE = "/tmp/convert_fbe/convert_fbe";
 static const char *CACHE_ROOT = "/cache";
+static const char *NVDATA_ROOT = "/vendor/nvdata";
 static const char *DATA_ROOT = "/data";
 static const char *SDCARD_ROOT = "/sdcard";
 static const char *TEMPORARY_LOG_FILE = "/tmp/recovery.log";
@@ -116,7 +126,11 @@ static const char *LAST_LOG_FILE = "/cache/recovery/last_log";
 // We will try to apply the update package 5 times at most in case of an I/O error or
 // bspatch | imgpatch error.
 static const int RETRY_LIMIT = 4;
+#if 0
 static const int BATTERY_READ_TIMEOUT_IN_SEC = 10;
+#else
+static const int BATTERY_READ_TIMEOUT_IN_SEC = 20;
+#endif
 // GmsCore enters recovery mode to install package when having enough battery
 // percentage. Normally, the threshold is 40% without charger and 20% with charger.
 // So we should check battery with a slightly lower limitation.
@@ -127,6 +141,7 @@ static constexpr const char* DEFAULT_LOCALE = "en-US";
 
 static std::string locale;
 static bool has_cache = false;
+static bool has_nvdata = false;
 
 RecoveryUI* ui = nullptr;
 bool modified_flash = false;
@@ -347,7 +362,6 @@ static std::vector<std::string> get_args(const int argc, char** const argv) {
       LOG(ERROR) << "Bad boot message: \"" << boot_recovery << "\"";
     }
   }
-
   // --- if that doesn't work, try the command file (if we have /cache).
   if (args.size() == 1 && has_cache) {
     std::string content;
@@ -752,6 +766,7 @@ static bool wipe_data(Device* device) {
         device->PreWipeData() &&
         erase_volume("/data") &&
         (has_cache ? erase_volume("/cache") : true) &&
+        (has_nvdata ? erase_volume(NVDATA_ROOT) : true) &&
         device->PostWipeData();
     ui->Print("Data wipe %s.\n", success ? "complete" : "failed");
     return success;
@@ -1288,7 +1303,9 @@ static bool is_battery_ok() {
         // the battery profile. Before the load finishes, it reports value 50 as a fake
         // capacity. BATTERY_READ_TIMEOUT_IN_SEC is set that the battery drivers are expected
         // to finish loading the battery profile earlier than 10 seconds after kernel startup.
-        if (status == 0 && capacity.valueInt64 == 50) {
+        // If capacity is actually 50, recovery will terminate update.
+        // Modify capacity.valueInt64 from 50 to -1.
+        if (status == 0 && capacity.valueInt64 == -1) {
             if (wait_second < BATTERY_READ_TIMEOUT_IN_SEC) {
                 sleep(1);
                 wait_second++;
@@ -1297,7 +1314,7 @@ static bool is_battery_ok() {
         }
         // If we can't read battery percentage, it may be a device without battery. In this
         // situation, use 100 as a fake battery percentage.
-        if (status != 0) {
+        if (status != 0 || capacity.valueInt64 == -1) {
             capacity.valueInt64 = 100;
         }
         return (charged && capacity.valueInt64 >= BATTERY_WITH_CHARGER_OK_PERCENTAGE) ||
@@ -1305,20 +1322,20 @@ static bool is_battery_ok() {
     }
 }
 
-static void set_retry_bootloader_message(int retry_count, const std::vector<std::string>& args) {
-  std::vector<std::string> options;
-  for (const auto& arg : args) {
-    if (!android::base::StartsWith(arg, "--retry_count")) {
-      options.push_back(arg);
+static void set_retry_bootloader_message(int retry_count, int argc, char** argv) {
+    std::vector<std::string> options;
+    for (int i = 1; i < argc; ++i) {
+        if (strstr(argv[i], "retry_count") == nullptr) {
+            options.push_back(argv[i]);
+        }
     }
-  }
 
-  // Increment the retry counter by 1.
-  options.push_back(android::base::StringPrintf("--retry_count=%d", retry_count + 1));
-  std::string err;
-  if (!update_bootloader_message(options, &err)) {
-    LOG(ERROR) << err;
-  }
+    // Increment the retry counter by 1.
+    options.push_back(android::base::StringPrintf("--retry_count=%d", retry_count+1));
+    std::string err;
+    if (!update_bootloader_message(options, &err)) {
+        LOG(ERROR) << err;
+    }
 }
 
 static bool bootreason_in_blacklist() {
@@ -1387,7 +1404,10 @@ int main(int argc, char **argv) {
     printf("Starting recovery (pid %d) on %s", getpid(), ctime(&start));
 
     load_volume_table();
-    has_cache = volume_for_path(CACHE_ROOT) != nullptr;
+    has_cache = volume_for_mount_point(CACHE_ROOT) != nullptr;
+    has_nvdata = volume_for_mount_point(NVDATA_ROOT) != nullptr;
+
+    mt_init_partition_type();
 
     std::vector<std::string> args = get_args(argc, argv);
     std::vector<char*> args_to_parse(args.size());
@@ -1414,7 +1434,13 @@ int main(int argc, char **argv) {
                               &option_index)) != -1) {
         switch (arg) {
         case 'n': android::base::ParseInt(optarg, &retry_count, 0); break;
-        case 'u': update_package = optarg; break;
+        case 'u': update_package = optarg; 
+            //adupsfota start
+            #ifdef ADUPS_FOTA_SUPPORT
+            perform_fota = 1; 
+            #endif
+            //adupsfota end
+            break;
         case 'w': should_wipe_data = true; break;
         case 'c': should_wipe_cache = true; break;
         case 't': show_text = true; break;
@@ -1495,10 +1521,34 @@ int main(int argc, char **argv) {
     }
     printf("\n\n");
 
+    //adupsfota start
+    #ifdef ADUPS_FOTA_SUPPORT
+    if (perform_fota == 1) {
+		find_update_package_new(update_package);
+        if (strncmp(update_package, "/storage/", 9) == 0) {
+            int len = strlen(update_package) + 12;
+            char* modified_path = (char*)malloc(len);
+            strlcpy(modified_path, SDCARD_ROOT, len);
+            if(strstr(update_package, "/Android/data/com.adups.fota/files/adupsfota/update.zip") != NULL){
+                char const *SDCARD_PATH = "/Android/data/com.adups.fota/files/adupsfota/update.zip";
+                strlcat(modified_path, SDCARD_PATH, len);
+			}
+			else if(strstr(update_package, "/Android/data/com.adups.fota/files/LocalSdUpdate.zip") != NULL){
+                char const *SDCARD_PATH = "/Android/data/com.adups.fota/files/LocalSdUpdate.zip";
+                strlcat(modified_path, SDCARD_PATH, len);
+			}
+            printf("(replacing path \"%s\" with \"%s\")\n",
+                   update_package, modified_path);
+            update_package = modified_path;
+        }
+	}
+    #endif
+    //adupsfota end
     property_list(print_property, NULL);
     printf("\n");
 
     ui->Print("Supported API: %d\n", RECOVERY_API_VERSION);
+    fprintf(stdout, "update_package = %s\n", update_package ? update_package : "NULL");
 
     int status = INSTALL_SUCCESS;
 
@@ -1522,6 +1572,13 @@ int main(int argc, char **argv) {
         } else {
             status = install_package(update_package, &should_wipe_cache,
                                      TEMPORARY_INSTALL_FILE, true, retry_count);
+            //adupsfota start
+            #ifdef ADUPS_FOTA_SUPPORT
+            if (perform_fota == 1) {
+                finish_adupsfota(update_package, TEMPORARY_LOG_FILE, status);
+	        }
+            #endif
+            //adupsfota end
             if (status == INSTALL_SUCCESS && should_wipe_cache) {
                 wipe_cache(false, device);
             }
@@ -1531,7 +1588,7 @@ int main(int argc, char **argv) {
                 // times before we abandon this OTA update.
                 if (status == INSTALL_RETRY && retry_count < RETRY_LIMIT) {
                     copy_logs();
-                    set_retry_bootloader_message(retry_count, args);
+                    set_retry_bootloader_message(retry_count, argc, argv);
                     // Print retry count on screen.
                     ui->Print("Retry attempt %d\n", retry_count);
 
@@ -1602,6 +1659,7 @@ int main(int argc, char **argv) {
       ui->SetBackground(RecoveryUI::NO_COMMAND);
     }
 
+    mt_main_write_result(status, update_package);
     if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
         ui->SetBackground(RecoveryUI::ERROR);
         if (!ui->IsTextVisible()) {

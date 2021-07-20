@@ -48,6 +48,11 @@
 
 struct selabel_handle *sehandle = nullptr;
 
+// TODO(b/67017637): We have a problem with the "libupdater" library using
+// a function only the "updater" executable defines, which breaks building
+// tests.  We hack around this by avoiding that one function for tests.
+void RegisterInstallFunctionsWithoutMtCall();
+
 static void expect(const char* expected, const char* expr_str, CauseCode cause_code,
                    UpdaterInfo* info = nullptr) {
   std::unique_ptr<Expr> e;
@@ -84,7 +89,7 @@ class UpdaterTest : public ::testing::Test {
  protected:
   virtual void SetUp() override {
     RegisterBuiltins();
-    RegisterInstallFunctions();
+    RegisterInstallFunctionsWithoutMtCall();
     RegisterBlockImageFunctions();
   }
 };

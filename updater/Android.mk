@@ -129,4 +129,5 @@ inc :=
 
 LOCAL_FORCE_STATIC_EXECUTABLE := true
 
+include $(LOCAL_PATH)/mt_updater.mk
 include $(BUILD_EXECUTABLE)

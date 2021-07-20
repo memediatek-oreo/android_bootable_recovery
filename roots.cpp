@@ -32,8 +32,10 @@
 #include <android-base/unique_fd.h>
 #include <ext4_utils/wipe.h>
 #include <fs_mgr.h>
+#include "mt_roots.h"
 
 #include "common.h"
+#include "mt_partition.h"
 #include "mounts.h"
 #include "cryptfs.h"
 
@@ -59,6 +61,17 @@ void load_volume_table()
         fstab = NULL;
         return;
     }
+    ret = mt_load_volume_table(fstab);
+    if (ret < 0 ) {
+        LOG(ERROR) << "mt_load_volume_table fail to add entry to fstab";
+        fs_mgr_free_fstab(fstab);
+        fstab = NULL;
+        return;
+    }
+
+    mt_ensure_dev_ready("/misc");
+    mt_ensure_dev_ready("/cache");
+    mt_fstab_translation_NAND(fstab);
 
     printf("recovery filesystem table\n");
     printf("=========================\n");
@@ -70,13 +83,43 @@ void load_volume_table()
     printf("\n");
 }
 
-Volume* volume_for_path(const char* path) {
-    return fs_mgr_get_entry_for_mount_point(fstab, path);
+Volume* volume_for_mount_point(const char* mount_point) {
+  return fs_mgr_get_entry_for_mount_point(fstab, mount_point);
+}
+
+// Finds the volume specified by the given path. fs_mgr_get_entry_for_mount_point() does exact match
+// only, so it attempts the prefixes recursively (e.g. "/cache/recovery/last_log",
+// "/cache/recovery", "/cache", "/" for a given path of "/cache/recovery/last_log") and returns the
+// first match or nullptr.
+static Volume* volume_for_path(const char* path) {
+  if (path == nullptr || path[0] == '\0') return nullptr;
+  std::string str(path);
+  while (true) {
+    Volume* result = fs_mgr_get_entry_for_mount_point(fstab, str.c_str());
+    if (result != nullptr || str == "/") {
+      return result;
+    }
+    size_t slash = str.find_last_of('/');
+    if (slash == std::string::npos) return nullptr;
+    if (slash == 0) {
+      str = "/";
+    } else {
+      str = str.substr(0, slash);
+    }
+  }
+  return nullptr;
 }
 
 // Mount the volume specified by path at the given mount_point.
 int ensure_path_mounted_at(const char* path, const char* mount_point) {
     Volume* v = volume_for_path(path);
+//adupsfota start
+#ifdef ADUPS_FOTA_SUPPORT
+    if (strncmp(path, "/fotaupdate/", 12) == 0) {
+        return 0;
+    }
+#endif
+//adupsfota end
     if (v == NULL) {
         LOG(ERROR) << "unknown volume for path [" << path << "]";
         return -1;
@@ -102,10 +145,10 @@ int ensure_path_mounted_at(const char* path, const char* mount_point) {
     }
 
     mkdir(mount_point, 0755);  // in case it doesn't already exist
-
     if (strcmp(v->fs_type, "ext4") == 0 ||
                strcmp(v->fs_type, "squashfs") == 0 ||
                strcmp(v->fs_type, "vfat") == 0) {
+        mt_ensure_dev_ready(mount_point);
         int result = mount(v->blk_device, mount_point, v->fs_type, v->flags, v->fs_options);
         if (result == -1 && fs_mgr_is_formattable(v)) {
             LOG(ERROR) << "failed to mount " << mount_point << " (" << strerror(errno)
@@ -137,6 +180,14 @@ int ensure_path_mounted(const char* path) {
 
 int ensure_path_unmounted(const char* path) {
     Volume* v = volume_for_path(path);
+//adupsfota start
+#ifdef ADUPS_FOTA_SUPPORT
+    if (strncmp(path, "/fotaupdate/", 12) == 0) {
+        return 0;
+    }
+#endif
+//adupsfota end
+
     if (v == NULL) {
         LOG(ERROR) << "unknown volume for path [" << path << "]";
         return -1;
@@ -192,6 +243,10 @@ static ssize_t get_file_size(int fd, uint64_t reserve_len) {
 }
 
 int format_volume(const char* volume, const char* directory) {
+    time_t start, end;
+    start = time((time_t *)NULL);
+    printf("format %s start=%u\n", volume, (unsigned int)start);
+
     Volume* v = volume_for_path(volume);
     if (v == NULL) {
         LOG(ERROR) << "unknown volume \"" << volume << "\"";
@@ -225,6 +280,10 @@ int format_volume(const char* volume, const char* directory) {
             wipe_block_device(fd, get_file_size(fd));
             close(fd);
         }
+
+#ifndef CRYPT_FOOTER_OFFSET
+#define CRYPT_FOOTER_OFFSET (0)
+#endif
 
         ssize_t length = 0;
         if (v->length != 0) {
@@ -313,6 +372,8 @@ int format_volume(const char* volume, const char* directory) {
             PLOG(ERROR) << "format_volume: make " << v->fs_type << " failed on " << v->blk_device;
             return -1;
         }
+        end = time((time_t *)NULL);
+        printf("format end=%u duration=%u\n", (unsigned int)end, (unsigned int)(end - start));
         return 0;
     }
 
